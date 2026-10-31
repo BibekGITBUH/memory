@@ -10,6 +10,7 @@
 - OAuth access tokens are audience/resource-bound to `PUBLIC_BASE_URL/mcp`.
 - OAuth authorization codes are short-lived, one-time, PKCE-bound, client-bound, redirect-bound, and resource-bound.
 - OAuth authorization state must be 16-8192 characters and is returned unchanged to the client after approval or denial.
+- Authorization responses include the configured issuer (`iss`) on both approval and consent denial.
 - Tool-level scopes are independently checked by each MCP tool.
 
 ## File safety

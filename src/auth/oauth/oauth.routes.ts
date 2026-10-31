@@ -10,6 +10,7 @@ import { resolveOAuthClient } from './client.service.js';
 import { validatePkce, verifyPkce } from './pkce.service.js';
 import { isValidRedirectUri, matchesRedirectUri } from './redirect.service.js';
 import { isValidOAuthState } from './state.service.js';
+import { authorizationResponseUrl } from './authorization-response.js';
 import { getBrowserSession } from '../session.js';
 
 const dcrSchema = z.object({
@@ -298,10 +299,11 @@ export function createOAuthRouter(config: AppConfig, stores: Stores): Router {
       const unavailableScopes = authRequest.scope.filter(scope => !userHasScope(session.user.scopes, scope));
       if (unavailableScopes.length) { res.status(403).type('html').send(htmlPage('Insufficient permission', `<p>Your account is not authorized for: ${htmlEscape(unavailableScopes.join(', '))}.</p>`)); return; }
       if (decision !== 'allow') {
-        const denied = new URL(authRequest.redirectUri);
-        denied.searchParams.set('error', 'access_denied');
-        denied.searchParams.set('state', authRequest.state);
-        res.redirect(302, denied.toString());
+        res.redirect(302, authorizationResponseUrl(authRequest.redirectUri, {
+          error: 'access_denied',
+          state: authRequest.state,
+          issuer: config.issuer
+        }));
         return;
       }
       const code = randomToken(32);
@@ -319,11 +321,11 @@ export function createOAuthRouter(config: AppConfig, stores: Stores): Router {
         consumedAt: null
       };
       await stores.authorizationCodes.update(rows => [...rows, record]);
-      const redirect = new URL(authRequest.redirectUri);
-      redirect.searchParams.set('code', code);
-      redirect.searchParams.set('state', authRequest.state);
-      redirect.searchParams.set('iss', config.issuer);
-      res.redirect(302, redirect.toString());
+      res.redirect(302, authorizationResponseUrl(authRequest.redirectUri, {
+        code,
+        state: authRequest.state,
+        issuer: config.issuer
+      }));
     } catch (error) {
       res.status(400).type('html').send(htmlPage('Authorization failed', `<p>${htmlEscape(error instanceof Error ? error.message : 'Authorization failed.')}</p>`));
     }
