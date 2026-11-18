@@ -64,5 +64,31 @@ export function createAdminRouter(config: AppConfig, stores: Stores) {
     res.status(revoked ? 200 : 404).json({ revoked });
   });
 
+  router.get('/stats', async (_req, res) => {
+    const [memories, keys] = await Promise.all([stores.memories.read(), stores.apiKeys.read()]);
+    res.json({
+      totalMemories: memories.length,
+      activeApiKeys: keys.filter(k => k.revokedAt === null && (!k.expiresAt || new Date(k.expiresAt) > new Date())).length,
+      totalApiKeys: keys.length
+    });
+  });
+
+  router.get('/memories', async (req, res) => {
+    const memories = await stores.memories.read();
+    const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10));
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query['limit'] ?? '20'), 10)));
+    const search = typeof req.query['search'] === 'string' ? req.query['search'].toLowerCase() : '';
+    const filtered = search ? memories.filter(m => m.content.toLowerCase().includes(search)) : memories;
+    const start = (page - 1) * limit;
+    res.json({ total: filtered.length, page, limit, memories: filtered.slice(start, start + limit) });
+  });
+
+  router.delete('/memories/:id', async (req, res) => {
+    const id = req.params['id'] ?? '';
+    let deleted = false;
+    await stores.memories.update(rows => rows.filter(m => { if (m.id === id) { deleted = true; return false; } return true; }));
+    res.status(deleted ? 200 : 404).json({ deleted });
+  });
+
   return router;
 }

@@ -17,6 +17,7 @@ const envSchema = z.object({
   ENABLE_API_KEY: z.string().default('true'),
   ENABLE_BASIC: z.string().default('true'),
   ENABLE_NO_AUTH: z.string().default('false'),
+  ENABLE_REGISTRATION: z.string().default('true'),
   TEST_BEARER_TOKEN: z.string().default(''),
   TEST_BEARER_SCOPES: z.string().default('memory:read,memory:write'),
   TEST_API_KEY: z.string().default(''),
@@ -25,7 +26,8 @@ const envSchema = z.object({
   OAUTH_REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().min(300).max(31536000).default(2592000),
   OAUTH_AUTHORIZATION_CODE_TTL_SECONDS: z.coerce.number().int().min(30).max(600).default(300),
   TRUST_PROXY: z.string().default('false'),
-  CIMD_ALLOWED_HOSTS: z.string().default('')
+  CIMD_ALLOWED_HOSTS: z.string().default(''),
+  FRONTEND_URL: z.string().default('http://localhost:5173'),
 });
 
 function bool(value: string): boolean {
@@ -50,6 +52,7 @@ export interface AppConfig {
   enableApiKey: boolean;
   enableBasic: boolean;
   enableNoAuth: boolean;
+  enableRegistration: boolean;
   testBearerToken: string;
   testBearerScopes: string[];
   testApiKey: string;
@@ -59,6 +62,7 @@ export interface AppConfig {
   authorizationCodeTtlSeconds: number;
   trustProxy: boolean;
   cimdAllowedHosts: string[];
+  frontendUrl: string;
 }
 
 export function loadConfig(): AppConfig {
@@ -88,6 +92,7 @@ export function loadConfig(): AppConfig {
     enableApiKey: bool(parsed.ENABLE_API_KEY),
     enableBasic: bool(parsed.ENABLE_BASIC),
     enableNoAuth: bool(parsed.ENABLE_NO_AUTH),
+    enableRegistration: bool(parsed.ENABLE_REGISTRATION),
     testBearerToken: parsed.TEST_BEARER_TOKEN,
     testBearerScopes: splitScopes(parsed.TEST_BEARER_SCOPES),
     testApiKey: parsed.TEST_API_KEY,
@@ -96,7 +101,8 @@ export function loadConfig(): AppConfig {
     refreshTokenTtlSeconds: parsed.OAUTH_REFRESH_TOKEN_TTL_SECONDS,
     authorizationCodeTtlSeconds: parsed.OAUTH_AUTHORIZATION_CODE_TTL_SECONDS,
     trustProxy: bool(parsed.TRUST_PROXY),
-    cimdAllowedHosts: splitScopes(parsed.CIMD_ALLOWED_HOSTS).map(s => s.toLowerCase())
+    cimdAllowedHosts: splitScopes(parsed.CIMD_ALLOWED_HOSTS).map(s => s.toLowerCase()),
+    frontendUrl: parsed.FRONTEND_URL,
   };
 }
 

@@ -22,6 +22,18 @@ export const userSchema = z.object({
 });
 export type User = z.infer<typeof userSchema>;
 
+export const registerInputSchema = z.object({
+  username: z.string()
+    .trim()
+    .min(3, 'Username must be at least 3 characters.')
+    .max(50, 'Username cannot exceed 50 characters.')
+    .regex(/^[a-zA-Z0-9_\-\.@]+$/, 'Username may only contain letters, numbers, underscores, hyphens, dots, and @.'),
+  password: z.string()
+    .min(10, 'Password must be at least 10 characters long.')
+    .max(128, 'Password cannot exceed 128 characters.')
+});
+export type RegisterInput = z.infer<typeof registerInputSchema>;
+
 export const oauthClientSchema = z.object({
   clientId: z.string().min(1),
   clientName: z.string().min(1),

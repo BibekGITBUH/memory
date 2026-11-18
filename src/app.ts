@@ -1,5 +1,4 @@
 import express, { type ErrorRequestHandler } from 'express';
-import { timingSafeEqual } from 'node:crypto';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { hostHeaderValidation } from '@modelcontextprotocol/express';
@@ -13,28 +12,8 @@ import type { AuthenticatedRequest } from './auth/auth.types.js';
 import { createOAuthRouter } from './auth/oauth/oauth.routes.js';
 import { isLoopbackRedirectUri } from './auth/oauth/redirect.service.js';
 import { authorizationServerMetadata, protectedResourceMetadata } from './auth/oauth/metadata.js';
-import { authenticatePassword } from './auth/users.service.js';
-import { createBrowserSession, clearBrowserSession, getBrowserSession, issueLoginCsrf, verifyLoginCsrf } from './auth/session.js';
 import { createAdminRouter } from './routes/admin.routes.js';
-
-function escapeHtml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
-}
-
-function validReturnTo(value: string): string {
-  if (value.startsWith('/authorize?') || value === '/authorize' || value.startsWith('/admin/')) return value;
-  return '/';
-}
-
-function safeCsrfEqual(expected: string, submitted: string): boolean {
-  const left = Buffer.from(expected);
-  const right = Buffer.from(submitted);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-
-function localHost(host: string): boolean {
-  return ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(host.toLowerCase());
-}
+import { createAuthRouter } from './routes/auth.routes.js';
 
 export function createApp(config: AppConfig, stores: Stores) {
   const app = express();
@@ -62,7 +41,7 @@ export function createApp(config: AppConfig, stores: Stores) {
         styleSrc: ["'self'", "'unsafe-inline'"]
       }
     },
-    crossOriginResourcePolicy: { policy: 'same-site' }
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
   }));
   app.use(express.json({ limit: '64kb', strict: true }));
   app.use(express.urlencoded({ extended: false, limit: '32kb', parameterLimit: 100 }));
@@ -71,6 +50,7 @@ export function createApp(config: AppConfig, stores: Stores) {
   const authLimiter = rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false });
   app.use(generalLimiter);
 
+  // CORS for MCP and OAuth machine-to-machine endpoints (open to any origin)
   app.use((req, res, next) => {
     if (['/mcp', '/token', '/register', '/revoke'].includes(req.path) || req.path.startsWith('/.well-known/')) {
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -82,8 +62,22 @@ export function createApp(config: AppConfig, stores: Stores) {
     next();
   });
 
+  // CORS for frontend origin (credentials-aware)
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin === config.frontendUrl) {
+      res.setHeader('Access-Control-Allow-Origin', config.frontendUrl);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, PUT, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, Authorization, X-API-Key');
+    }
+    if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+    next();
+  });
+
+  // JSON status endpoint
   app.get('/', (_req, res) => {
-    res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Universal MCP Memory Server</title></head><body><h1>Universal MCP Memory Server</h1><p>Status: running</p><p>MCP endpoint: <code>${escapeHtml(config.resource)}</code></p><p>Exactly three tools: <code>create</code>, <code>delete</code>, <code>list</code>.</p><p><a href="/health">Health</a> · <a href="/login">Admin sign-in</a></p></body></html>`);
+    res.json({ service: 'universal-mcp-memory-server', status: 'running', version: '1.0.0', mcpEndpoint: config.resource });
   });
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'universal-mcp-memory-server', transport: 'streamable-http' }));
@@ -101,30 +95,17 @@ export function createApp(config: AppConfig, stores: Stores) {
   app.get('/.well-known/oauth-protected-resource/mcp', sendProtectedResourceMetadata);
   app.get('/mcp/.well-known/oauth-protected-resource', sendProtectedResourceMetadata);
 
+  // Backward-compat redirect: OAuth clients that open /login are sent to the frontend login page
   app.get('/login', (req, res) => {
-    const returnTo = validReturnTo(typeof req.query['return_to'] === 'string' ? req.query['return_to'] : '/');
-    const csrf = issueLoginCsrf(req, res, config);
-    res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head><body><main><h1>Sign in to MCP Memory Server</h1><form method="post" action="/login"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}"><label>Username <input name="username" autocomplete="username" required></label><br><label>Password <input name="password" type="password" autocomplete="current-password" required></label><br><button type="submit">Sign in</button></form></main></body></html>`);
+    const returnTo = typeof req.query['return_to'] === 'string' ? req.query['return_to'] : '';
+    const dest = returnTo
+      ? `${config.frontendUrl}/login?return_to=${encodeURIComponent(returnTo)}`
+      : `${config.frontendUrl}/login`;
+    res.redirect(302, dest);
   });
 
-  app.post('/login', authLimiter, async (req, res) => {
-    const csrf = req.body['csrf'];
-    if (!verifyLoginCsrf(req, csrf, config)) { res.status(403).send('Invalid or expired CSRF token. Reload the sign-in page.'); return; }
-    const username = typeof req.body['username'] === 'string' ? req.body['username'] : '';
-    const password = typeof req.body['password'] === 'string' ? req.body['password'] : '';
-    const user = await authenticatePassword(stores.users, username, password);
-    if (!user) { res.status(401).type('html').send('<p>Invalid username or password.</p><a href="/login">Try again</a>'); return; }
-    createBrowserSession(res, user, config);
-    res.redirect(303, validReturnTo(typeof req.body['return_to'] === 'string' ? req.body['return_to'] : '/'));
-  });
-
-  app.post('/logout', async (req, res) => {
-    const session = await getBrowserSession(req, stores, config);
-    const submitted = typeof req.body['csrf'] === 'string' ? req.body['csrf'] : '';
-    if (!session || !safeCsrfEqual(session.csrf, submitted)) { res.status(403).send('Invalid CSRF token.'); return; }
-    clearBrowserSession(res, config);
-    res.redirect(303, '/');
-  });
+  // JSON auth API for the frontend SPA
+  app.use('/auth', authLimiter, createAuthRouter(config, stores));
 
   app.use(['/register', '/token', '/revoke', '/authorize'], authLimiter);
   app.use((req, res, next) => {

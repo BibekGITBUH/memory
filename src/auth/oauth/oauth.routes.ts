@@ -266,68 +266,28 @@ export function createOAuthRouter(config: AppConfig, stores: Stores): Router {
     try {
       const authRequest = await validateAuthorizationRequest(req.query as Record<string, unknown>, stores, config);
       const session = await getBrowserSession(req, stores, config);
-      if (!session) {
-        res.redirect(302, `/login?return_to=${encodeURIComponent(req.originalUrl)}`);
-        return;
-      }
-      const unavailableScopes = authRequest.scope.filter(scope => !userHasScope(session.user.scopes, scope));
-      if (unavailableScopes.length) throw new Error(`Your account is not authorized for: ${unavailableScopes.join(', ')}.`);
-      const hidden = (key: string, value: string): string => `<input type="hidden" name="${key}" value="${htmlEscape(value)}">`;
-      const fields: [string, string][] = [
-        ['response_type', 'code'], ['client_id', authRequest.clientId], ['redirect_uri', authRequest.redirectUri],
-        ['state', authRequest.state], ['scope', authRequest.scope.join(' ')], ['code_challenge', authRequest.codeChallenge],
-        ['code_challenge_method', 'S256'], ['resource', authRequest.resource]
-      ];
-      const hiddenFields = fields.map(([key, value]) => hidden(key, value)).join('');
-      res.type('html').send(htmlPage('Authorize MCP Memory Server', `
-        <p><strong>${htmlEscape(authRequest.client.clientName)}</strong> requests access to your memories.</p>
-        <ul>${authRequest.scope.map(scope => `<li>${htmlEscape(scope)}</li>`).join('')}</ul>
-        <p>Read permission lets the client list stored memories. Write permission lets it create and permanently delete memories.</p>
-        <form method="post" action="${htmlEscape(new URL(config.publicBaseUrl).origin)}/authorize">${hiddenFields}${hidden('csrf', session.csrf)}<button type="submit" name="decision" value="allow">Allow</button> <button type="submit" name="decision" value="deny">Deny</button></form>
-      `));
-    } catch (error) {
-      res.status(400).type('html').send(htmlPage('Authorization request rejected', `<p>${htmlEscape(error instanceof Error ? error.message : 'Invalid authorization request.')}</p>`));
-    }
-  });
-
-  router.post('/authorize', async (req, res) => {
-    try {
-      const session = await getBrowserSession(req, stores, config);
-      if (!session || !safeStringEqual(session.csrf, stringField(req.body, 'csrf'))) { res.status(403).send('Invalid or expired CSRF token.'); return; }
-      const decision = stringField(req.body, 'decision');
-      const authRequest = await validateAuthorizationRequest(authorizationRequestFromBody(req.body), stores, config);
-      const unavailableScopes = authRequest.scope.filter(scope => !userHasScope(session.user.scopes, scope));
-      if (unavailableScopes.length) { res.status(403).type('html').send(htmlPage('Insufficient permission', `<p>Your account is not authorized for: ${htmlEscape(unavailableScopes.join(', '))}.</p>`)); return; }
-      if (decision !== 'allow') {
-        res.redirect(302, authorizationResponseUrl(authRequest.redirectUri, {
-          error: 'access_denied',
-          state: authRequest.state,
-          issuer: config.issuer
-        }));
-        return;
-      }
-      const code = randomToken(32);
-      const now = new Date();
-      const record: AuthorizationCode = {
-        hash: hashOpaque(code, config.tokenPepper),
+      // Store consent challenge and redirect to frontend consent page
+      const consentId = randomUUID();
+      const { consentChallenges } = await import('../../routes/auth.routes.js');
+      consentChallenges.set(consentId, {
         clientId: authRequest.clientId,
-        userId: session.user.id,
+        clientName: authRequest.client.clientName,
         redirectUri: authRequest.redirectUri,
-        scope: authRequest.scope as ('memory:read' | 'memory:write')[],
-        resource: authRequest.resource,
-        codeChallenge: authRequest.codeChallenge,
-        createdAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + config.authorizationCodeTtlSeconds * 1000).toISOString(),
-        consumedAt: null
-      };
-      await stores.authorizationCodes.update(rows => [...rows, record]);
-      res.redirect(302, authorizationResponseUrl(authRequest.redirectUri, {
-        code,
         state: authRequest.state,
-        issuer: config.issuer
-      }));
+        scope: authRequest.scope as ('memory:read' | 'memory:write')[],
+        codeChallenge: authRequest.codeChallenge,
+        resource: authRequest.resource,
+        expiresAt: Date.now() + 5 * 60 * 1000
+      });
+      // If not logged in, redirect to frontend login with return_to pointing to frontend consent page
+      if (!session) {
+        const consentUrl = `${config.frontendUrl}/consent?consent_id=${consentId}`;
+        res.redirect(302, `${config.frontendUrl}/login?return_to=${encodeURIComponent(consentUrl)}`);
+        return;
+      }
+      res.redirect(302, `${config.frontendUrl}/consent?consent_id=${consentId}`);
     } catch (error) {
-      res.status(400).type('html').send(htmlPage('Authorization failed', `<p>${htmlEscape(error instanceof Error ? error.message : 'Authorization failed.')}</p>`));
+      res.status(400).json({ error: 'invalid_request', error_description: error instanceof Error ? error.message : 'Invalid authorization request.' });
     }
   });
 
